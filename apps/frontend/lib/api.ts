@@ -87,7 +87,11 @@ export const api = {
           } catch { /* ignore */ }
           throw new Error(message);
         }
-        return text ? JSON.parse(text) : undefined;
+        try {
+          return text ? JSON.parse(text) : undefined;
+        } catch {
+          return undefined;
+        }
       });
     },
     list: (jobId: string) => request<any[]>(`/jobs/${jobId}/applications`),

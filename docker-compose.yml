@@ -128,7 +128,7 @@ services:
       - AI_SERVICE_URL=http://ai-screener-service:3003
       - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_change_in_prod}
       - REDIS_URL=redis://redis:6379
-      - THROTTLE_TTL=${THROTTLE_TTL:-60000}
+      - THROTTLE_TTL=${THROTTLE_TTL:-60}
       - THROTTLE_LIMIT=${THROTTLE_LIMIT:-10}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     ports:
