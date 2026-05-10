@@ -1,0 +1,168 @@
+services:
+  # ─── Infrastructure ───────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: ars_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ars_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ars_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ars_db}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ars_user -d ars_db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ars_redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Microservices ────────────────────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./apps/auth-service
+      dockerfile: Dockerfile
+    container_name: ars_auth
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DATABASE_URL=postgresql://ars_user:ars_password@postgres:5432/ars_db
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_change_in_prod}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-7d}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3001/api/v1/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  job-service:
+    build:
+      context: ./apps/job-service
+      dockerfile: Dockerfile
+    container_name: ars_job
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - DATABASE_URL=postgresql://ars_user:ars_password@postgres:5432/ars_db
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_change_in_prod}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET:-ars-resumes}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - '3002:3002'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3002/api/v1/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  ai-screener-service:
+    build:
+      context: ./apps/ai-screener-service
+      dockerfile: Dockerfile
+    container_name: ars_ai
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - DATABASE_URL=postgresql://ars_user:ars_password@postgres:5432/ars_db
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_change_in_prod}
+      - REDIS_URL=redis://redis:6379
+      - REDIS_TTL=${REDIS_TTL:-3600}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - '3003:3003'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3003/api/v1/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  api-gateway:
+    build:
+      context: ./apps/api-gateway
+      dockerfile: Dockerfile
+    container_name: ars_gateway
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - AUTH_SERVICE_URL=http://auth-service:3001
+      - JOB_SERVICE_URL=http://job-service:3002
+      - AI_SERVICE_URL=http://ai-screener-service:3003
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_change_in_prod}
+      - REDIS_URL=redis://redis:6379
+      - THROTTLE_TTL=${THROTTLE_TTL:-60000}
+      - THROTTLE_LIMIT=${THROTTLE_LIMIT:-10}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - '3000:3000'
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      job-service:
+        condition: service_healthy
+      ai-screener-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/v1/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    container_name: ars_frontend
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:3000/api/v1
+    ports:
+      - '3004:3004'
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

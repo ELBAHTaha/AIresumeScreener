@@ -1,0 +1,19 @@
+{
+  "name": "ai-resume-screener",
+  "version": "1.0.0",
+  "description": "AI-powered resume screening and job matching platform",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "libs/*"
+  ],
+  "scripts": {
+    "start:gateway": "cd apps/api-gateway && npm run start:dev",
+    "start:auth": "cd apps/auth-service && npm run start:dev",
+    "start:job": "cd apps/job-service && npm run start:dev",
+    "start:ai": "cd apps/ai-screener-service && npm run start:dev",
+    "docker:up": "docker-compose up --build",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f"
+  }
+}
