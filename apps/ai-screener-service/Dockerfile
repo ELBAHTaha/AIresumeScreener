@@ -1,37 +1,41 @@
-# Pin to a specific minor release for reproducible builds.
-# To lock to a sha256 digest run: docker pull node:20.18.0-alpine3.20
-# then append @sha256:<digest> to the FROM line.
-FROM node:20.18.0-alpine3.20 AS builder
+FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm install
+# ─── System dependencies ─────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY . .
-RUN npm run build
+# ─── Python dependencies ─────────────────────────────────────────────────────
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# ─── Production image ─────────────────────────────────────────────────────
-FROM node:20.18.0-alpine3.20 AS production
+# ─── Bake ML models into the image so the first request is fast ──────────────
+# sentence-transformers and HuggingFace caches land in /app/model_cache,
+# which will be chowned to the non-root user below.
+ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
+ENV HF_HOME=/app/model_cache
+ENV TRANSFORMERS_CACHE=/app/model_cache
 
-ENV NODE_ENV=production
+RUN python -m spacy download en_core_web_md
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
-WORKDIR /app
+# ─── Application code ────────────────────────────────────────────────────────
+COPY main.py screener.py models.py database.py cache.py auth.py ./
 
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY package*.json ./
+# ─── Non-root user ───────────────────────────────────────────────────────────
+RUN groupadd --system appgroup \
+    && useradd --system --gid appgroup --no-create-home appuser \
+    && chown -R appuser:appgroup /app
 
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nestjs -u 1001 -G nodejs && \
-    mkdir -p /app/logs && \
-    chown -R nestjs:nodejs /app/logs
+USER appuser
 
-USER nestjs
-
+# ─── Runtime ─────────────────────────────────────────────────────────────────
 EXPOSE 3003
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:3003/api/v1/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3003/api/v1/health')" || exit 1
 
-CMD ["node", "dist/main"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3003", "--workers", "1"]

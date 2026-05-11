@@ -1,11 +1,32 @@
-node_modules
-dist
-coverage
-logs
-.env
-.env.*
+# NestJS artefacts — not used by the Python image
+src/
+dist/
+node_modules/
+package.json
+package-lock.json
+tsconfig.json
+tsconfig.build.json
+nest-cli.json
+.eslintrc.js
+.prettierrc
+coverage/
+logs/
 *.spec.ts
 *.test.ts
-.git
+
+# Python byte-code and virtual envs
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Dev / editor
+.env
+.env.*
+*.log
+.DS_Store
+.git/
 .gitignore
 README.md
