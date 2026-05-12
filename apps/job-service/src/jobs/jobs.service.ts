@@ -25,6 +25,8 @@ export class JobsService {
   ) {
     this.s3 = new S3Client({
       region: process.env.AWS_REGION || 'us-east-1',
+      endpoint: process.env.MINIO_ENDPOINT,
+      forcePathStyle: true,
       credentials: {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
@@ -127,7 +129,7 @@ export class JobsService {
     );
 
     this.logger.log(`Uploaded resume: ${key}`);
-    const region = process.env.AWS_REGION || 'us-east-1';
-    return `https://${this.bucket}.s3.${region}.amazonaws.com/${key}`;
+    const publicUrl = process.env.MINIO_PUBLIC_URL || 'http://localhost:9000';
+    return `${publicUrl}/${this.bucket}/${key}`;
   }
 }

@@ -75,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_screening_score ON screening_results(match_score 
 INSERT INTO users (email, password, first_name, last_name, role)
 VALUES (
   'admin@ars.dev',
-  '$2b$10$rOzJqY7H8K2mN3pL6wX9OeQ1sT4uV7yB0cD5fG8hI1jK4lM7nP0',
+  '$2b$10$Z6a5pRZu5iR9CYdOPnmM1e/GfHLLMb6qCVZsejq1cFyMJm7ifzY6a',
   'Admin',
   'User',
   'admin'

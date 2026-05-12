@@ -31,6 +31,44 @@ services:
       timeout: 5s
       retries: 5
 
+  minio:
+    image: minio/minio:latest
+    container_name: ars_minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minio123456}
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:9000/minio/health/live || exit 1']
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: ars_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minio123456}
+      - MINIO_BUCKET=${MINIO_BUCKET:-ars-resumes}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
+      mc mb --ignore-existing local/$$MINIO_BUCKET &&
+      mc anonymous set download local/$$MINIO_BUCKET &&
+      echo 'MinIO bucket ready'
+      "
+    restart: "no"
+
   # ─── Microservices ────────────────────────────────────────────────────────
   auth-service:
     build:
@@ -66,15 +104,19 @@ services:
       - PORT=3002
       - DATABASE_URL=postgresql://ars_user:ars_password@postgres:5432/ars_db
       - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_change_in_prod}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_S3_BUCKET=${AWS_S3_BUCKET:-ars-resumes}
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minio}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minio123456}
+      - AWS_S3_BUCKET=${MINIO_BUCKET:-ars-resumes}
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_PUBLIC_URL=${MINIO_PUBLIC_URL:-http://localhost:9000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     ports:
       - '3002:3002'
     depends_on:
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:3002/api/v1/health || exit 1']
@@ -166,3 +208,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  minio_data:
