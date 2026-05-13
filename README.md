@@ -1,36 +1,59 @@
 # AI Resume Screener
 
-> A production-grade, AI-powered resume screening platform built with NestJS microservices, Claude AI, PostgreSQL, Redis, AWS S3, and Docker.
+> A production-grade AI-powered resume screening platform built with NestJS microservices, a Python FastAPI ML pipeline, PostgreSQL, Redis, MinIO, and Docker.
 
 ---
 
 ## Architecture
 
 ```
-                    ┌─────────────────────────┐
-                    │      API Gateway         │
-                    │    NestJS :3000          │
-                    │  Rate-limit · Logging    │
-                    └──┬────────┬────────┬─────┘
-                       │        │        │
-          ┌────────────┘   ┌────┘   ┌───┘
-          │                │        │
-  ┌───────▼──────┐  ┌──────▼──────┐ ┌──────▼──────────────┐
-  │ Auth Service │  │ Job Service │ │ AI Screener Service  │
-  │  NestJS :3001│  │ NestJS :3002│ │    NestJS :3003      │
-  │ JWT · RBAC   │  │ CRUD · S3   │ │ Claude · Redis cache │
-  └──────────────┘  └─────────────┘ └─────────────────────┘
-          │                │                   │
-          └────────────────┼───────────────────┘
+                    ┌──────────────────────────┐
+                    │      Next.js Frontend     │
+                    │         :3004             │
+                    └────────────┬─────────────┘
+                                 │
+                    ┌────────────▼─────────────┐
+                    │       API Gateway         │
+                    │      NestJS :3000         │
+                    │  Rate-limit · Logging     │
+                    └──┬──────────┬────────┬───┘
+                       │          │        │
+          ┌────────────┘   ┌──────┘   ┌───┘
+          │                │          │
+  ┌───────▼──────┐  ┌──────▼──────┐  ┌──────▼──────────────┐
+  │ Auth Service │  │ Job Service │  │  AI Screener Service │
+  │ NestJS :3001 │  │ NestJS :3002│  │  Python FastAPI :3003│
+  │  JWT · RBAC  │  │ CRUD · MinIO│  │ spacy · embeddings   │
+  └──────────────┘  └─────────────┘  └─────────────────────┘
+          │                │                    │
+          └────────────────┼────────────────────┘
                            │
              ┌─────────────┴──────────────┐
              │                            │
       ┌──────▼──────┐             ┌───────▼──────┐
       │  PostgreSQL  │             │    Redis 7   │
-      │  (shared DB) │             │  (cache +    │
-      └─────────────┘             │   throttle)  │
+      │  (shared DB) │             │ (cache +     │
+      └─────────────┘             │  throttle)   │
                                   └──────────────┘
+                    ┌─────────────────────────────┐
+                    │           MinIO              │
+                    │  S3-compatible storage :9000 │
+                    │  Console UI          :9001   │
+                    └─────────────────────────────┘
 ```
+
+### Services at a glance
+
+| Container          | Port      | Responsibility                                       |
+|--------------------|-----------|------------------------------------------------------|
+| `ars_postgres`     | 5432      | Shared PostgreSQL 16                                 |
+| `ars_redis`        | 6379      | Redis 7 — AI result cache + throttle counters        |
+| `ars_minio`        | 9000/9001 | MinIO S3-compatible object storage for PDF resumes   |
+| `ars_auth`         | 3001      | JWT registration/login, RBAC, token verification     |
+| `ars_job`          | 3002      | Job CRUD, applications, resume upload + text extract |
+| `ars_ai`           | 3003      | Local ML screening, Redis cache, email notifications |
+| `ars_gateway`      | 3000      | API Gateway — rate limiting, logging, HTTP proxy     |
+| `ars_frontend`     | 3004      | Next.js 14 App Router frontend                       |
 
 ---
 
@@ -38,15 +61,16 @@
 
 | Feature | Details |
 |---|---|
-| AI Screening | Claude (`claude-sonnet-4`) analyzes resumes: 0–100 match score, skills gap, recommendation |
-| Redis Caching | Identical resume+job combos cached 1 hr; cached hits respond in < 50ms |
-| JWT + RBAC | Three roles: `admin`, `recruiter`, `candidate`; route-level enforcement |
-| Rate Limiting | Global 10 req/60s; POST /screen restricted to 3 req/60s; backed by Redis |
-| Resume Storage | PDF uploads via FileInterceptor → AWS S3 (`resumes/{jobId}/{candidateId}/{uuid}.pdf`) |
-| Email Notifications | Nodemailer SMTP notification to recruiter after each screening completes |
-| Health Checks | `GET /api/v1/health` on every service: DB ping, Redis ping, uptime, timestamp |
+| AI Screening | Local ML pipeline: spacy NER + sentence-transformer embeddings + cosine similarity. 0–100 match score, skills gap analysis, recommendation |
+| PDF Text Extraction | Resume text extracted from PDF at upload time (pdf-parse); stored in DB so screener always has full CV content |
+| Redis Caching | Identical resume+job content hashed and cached for 1 hr; cached hits respond in < 30ms |
+| JWT + RBAC | Three roles: `admin`, `recruiter`, `candidate`; enforced at route level on every service |
+| Rate Limiting | Global 10 req/60s; `POST /screen` restricted to 3 req/60s; backed by Redis |
+| Resume Storage | PDF uploads forwarded by gateway as multipart → job-service → MinIO (`resumes/{jobId}/{candidateId}/{uuid}.pdf`) |
+| Email Notifications | Optional SMTP notification to recruiter after each screening completes |
+| Health Checks | `GET /api/v1/health` on every service: DB ping, Redis ping, uptime |
 | Structured Logging | Winston JSON in production; colorized console in development |
-| Global Error Handling | Consistent `{ statusCode, error, message, timestamp, path }` on every service |
+| Global Error Handling | Consistent `{ statusCode, error, message, timestamp, path }` shape across all services |
 | Ranked Pagination | `GET /screen/ranked/:jobId?page=&limit=&minScore=&recommendation=` |
 
 ---
@@ -55,90 +79,139 @@
 
 | Tool | Version | Notes |
 |---|---|---|
-| Node.js | **20.x LTS** | `nvm use 20` |
-| npm | 10.x | ships with Node 20 |
 | Docker | 24.x+ | Docker Desktop or Docker Engine |
 | Docker Compose | 2.x (V2) | `docker compose` (not `docker-compose`) |
-| Anthropic API Key | — | [console.anthropic.com](https://console.anthropic.com) |
-| AWS credentials | — | IAM user with `s3:PutObject` on your bucket |
+
+No external API keys or cloud accounts are required. Everything runs locally via Docker.
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and fill in every value before starting.
+Copy `.env.example` to `.env`. Most defaults work out of the box for local development.
 
 | Variable | Service(s) | Required | Description |
 |---|---|---|---|
-| `POSTGRES_USER` | compose | yes | PostgreSQL username |
-| `POSTGRES_PASSWORD` | compose | yes | PostgreSQL password |
-| `POSTGRES_DB` | compose | yes | Database name |
-| `JWT_SECRET` | auth, job, ai, gateway | yes | HS256 signing secret (≥ 32 chars) |
+| `POSTGRES_USER` | compose | yes | PostgreSQL username (default `ars_user`) |
+| `POSTGRES_PASSWORD` | compose | yes | PostgreSQL password (default `ars_password`) |
+| `POSTGRES_DB` | compose | yes | Database name (default `ars_db`) |
+| `JWT_SECRET` | auth, job, ai, gateway | yes | HS256 signing secret — must be identical across all services (≥ 32 chars) |
 | `JWT_EXPIRES_IN` | auth | no | Token lifetime (default `7d`) |
-| `AWS_REGION` | job | yes | S3 region (e.g. `us-east-1`) |
-| `AWS_ACCESS_KEY_ID` | job | yes | IAM access key |
-| `AWS_SECRET_ACCESS_KEY` | job | yes | IAM secret key |
-| `AWS_S3_BUCKET` | job | yes | S3 bucket name |
-| `ANTHROPIC_API_KEY` | ai | yes | Claude API key |
+| `MINIO_ACCESS_KEY` | job, compose | yes | MinIO root user (default `minio`) |
+| `MINIO_SECRET_KEY` | job, compose | yes | MinIO root password (default `minio123456`) |
+| `MINIO_BUCKET` | job, compose | no | Bucket name (default `ars-resumes`) |
+| `MINIO_PUBLIC_URL` | job | no | Public base URL for resume links (default `http://localhost:9000`) |
 | `REDIS_URL` | ai, gateway | no | Redis connection string (default `redis://localhost:6379`) |
-| `REDIS_TTL` | ai | no | Cache TTL seconds (default `3600`) |
-| `THROTTLE_TTL` | gateway | no | Rate-limit window ms (default `60000`) |
+| `REDIS_TTL` | ai | no | Screening result cache TTL in seconds (default `3600`) |
+| `THROTTLE_TTL` | gateway | no | Rate-limit window in **seconds** (default `60`) |
 | `THROTTLE_LIMIT` | gateway | no | Max requests per window (default `10`) |
 | `LOG_LEVEL` | all | no | `error \| warn \| info \| debug` (default `info`) |
-| `SMTP_HOST` | ai | no | SMTP server (default `smtp.gmail.com`) |
+| `SMTP_HOST` | ai | no | SMTP server — email notify is skipped if unset |
 | `SMTP_PORT` | ai | no | SMTP port (default `587`) |
-| `SMTP_USER` | ai | no | SMTP username / sender email |
+| `SMTP_USER` | ai | no | SMTP username / sender address |
 | `SMTP_PASS` | ai | no | SMTP password or app password |
+
+> **Note:** `THROTTLE_TTL` uses **seconds** (not milliseconds). `@nestjs/throttler` v5 changed the unit — setting `60000` would create a 16.7-hour window.
 
 ---
 
-## Local Development — Step by Step
+## Running the Project
 
-### 1. Clone and configure
+### Start everything
 
 ```bash
-git clone https://github.com/yourusername/ai-resume-screener
+git clone https://github.com/ELBAHTaha/AIresumeScreener
 cd ai-resume-screener
-cp .env.example .env
-# Open .env and set ANTHROPIC_API_KEY, AWS_* and JWT_SECRET
+cp .env.example .env        # defaults work for local dev
+docker compose up --build -d
 ```
 
-### 2. Start all services
+Services start in dependency order: PostgreSQL → Redis → MinIO → auth/job/ai → gateway → frontend.  
+The AI screener takes ~90 s on first start to load ML models (spacy + sentence-transformers). Wait for all health checks to pass:
 
 ```bash
-docker compose up --build
+docker compose ps          # all services should show "(healthy)"
 ```
 
-Services start in dependency order: PostgreSQL → Redis → auth/job/ai → gateway.  
-Logs are streamed to the terminal. Wait until you see the gateway start line.
-
-### 3. Verify health
+### Verify health
 
 ```bash
 curl http://localhost:3000/api/v1/health
-# {"status":"ok","uptime":12,"timestamp":"..."}
-
-curl http://localhost:3001/api/v1/health
-# {"status":"ok","database":"connected","uptime":15,...}
+# {"status":"ok","upstreams":{...},"uptime":N}
 ```
 
-### 4. Open Swagger UI
-
-```
-http://localhost:3000/api/docs   ← API Gateway (use this for testing)
-http://localhost:3001/api/docs   ← Auth Service
-http://localhost:3002/api/docs   ← Job Service
-http://localhost:3003/api/docs   ← AI Screener Service
-```
-
-### 5. Run unit tests
+### Stop
 
 ```bash
-cd apps/ai-screener-service
-npm install
-npm test           # runs jest
-npm run test:cov   # with coverage
+docker compose down          # keep volumes (data persists)
+docker compose down -v       # wipe volumes (fresh DB + MinIO on next start)
 ```
+
+### Rebuild a single service
+
+```bash
+docker compose up --build -d job-service
+```
+
+### View logs
+
+```bash
+docker compose logs -f api-gateway
+docker compose logs -f ai-screener-service
+```
+
+### Access UIs
+
+| URL | Description |
+|---|---|
+| http://localhost:3004 | Next.js frontend |
+| http://localhost:3000/api/docs | Swagger — API Gateway |
+| http://localhost:3001/api/docs | Swagger — Auth Service |
+| http://localhost:3002/api/docs | Swagger — Job Service |
+| http://localhost:3003/api/docs | Swagger — AI Screener |
+| http://localhost:9001 | MinIO Console (bucket browser) |
+
+Default MinIO credentials: `minio` / `minio123456`  
+Seed admin account: `admin@ars.dev` / `Admin@123`
+
+---
+
+## API Endpoints
+
+All routes go through the gateway at `http://localhost:3000/api/v1/`.
+
+### Auth
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/auth/register` | — | Register with `{ email, password, firstName, lastName, role }` |
+| POST | `/auth/login` | — | Login — returns `{ accessToken, user }` |
+| GET | `/auth/profile` | any | Current user profile (requires Bearer token) |
+
+### Jobs
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/jobs[?status=]` | any | List jobs (default: active; filter by `active\|draft\|closed`) |
+| GET | `/jobs/:id` | any | Job details |
+| POST | `/jobs` | recruiter/admin | Create a job posting |
+| PATCH | `/jobs/:id` | recruiter (own) / admin | Update a job |
+| DELETE | `/jobs/:id` | recruiter (own) / admin | Delete a job |
+
+### Applications
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/jobs/:jobId/apply` | candidate | Upload PDF resume (`multipart/form-data` with `resume` field + optional `coverLetter`) |
+| GET | `/jobs/:jobId/applications` | recruiter/admin | List all applications for a job |
+
+### AI Screening
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/screen` | recruiter/admin | Screen a resume — rate-limited to 3 req/60s |
+| GET | `/screen/:applicationId` | recruiter/admin | Get screening result for an application |
+| GET | `/screen/ranked/:jobId` | recruiter/admin | Paginated ranked candidates (`?page=&limit=&minScore=&recommendation=`) |
 
 ---
 
@@ -152,7 +225,7 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"jane@acme.com","password":"Pass@1234","firstName":"Jane","lastName":"Smith","role":"recruiter"}'
 
-# Login — copy accessToken from response
+# Login — copy accessToken
 curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"jane@acme.com","password":"Pass@1234"}'
@@ -160,118 +233,91 @@ curl -X POST http://localhost:3000/api/v1/auth/login \
 export TOKEN="<your_access_token>"
 ```
 
-### Job lifecycle
+### Create a job + apply
 
 ```bash
 # Create a job (recruiter)
 curl -X POST http://localhost:3000/api/v1/jobs \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Senior Backend Engineer","description":"Build scalable APIs...","requirements":"5+ years Node.js, PostgreSQL, Docker","company":"Acme Corp","jobType":"remote","status":"active"}'
+  -d '{"title":"Senior Backend Engineer","description":"Build scalable APIs","requirements":"5+ years Node.js, PostgreSQL, Docker","company":"Acme Corp","jobType":"remote","status":"active"}'
 
-# List active jobs (any role)
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/v1/jobs
-
-# Get a specific job
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/v1/jobs/<jobId>
-```
-
-### Apply to a job (candidate)
-
-```bash
-export CANDIDATE_TOKEN="<candidate_jwt>"
 export JOB_ID="<job-uuid>"
 
+# Apply as candidate (PDF upload)
+export CANDIDATE_TOKEN="<candidate_jwt>"
 curl -X POST http://localhost:3000/api/v1/jobs/$JOB_ID/apply \
   -H "Authorization: Bearer $CANDIDATE_TOKEN" \
   -F "resume=@/path/to/resume.pdf" \
   -F "coverLetter=I am excited to apply..."
 ```
 
-### Screen a resume with AI
+### Screen a resume
 
 ```bash
+# applicationId comes from the apply response or GET /jobs/:jobId/applications
 curl -X POST http://localhost:3000/api/v1/screen \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "applicationId": "<application-uuid>",
     "jobTitle": "Senior Backend Engineer",
-    "jobDescription": "Build scalable APIs for millions of users...",
-    "jobRequirements": "5+ years Node.js, PostgreSQL, Docker, REST APIs",
-    "resumeText": "John Doe — 6 years Node.js, TypeScript, PostgreSQL, Docker, AWS"
+    "jobDescription": "Build scalable APIs for millions of users",
+    "jobRequirements": "5+ years Node.js, PostgreSQL, Docker, REST APIs"
   }'
 ```
+
+> `resumeText` is optional — if omitted or empty, the screener uses the text extracted from the uploaded PDF automatically.
 
 **Response:**
 ```json
 {
   "id": "uuid",
   "applicationId": "uuid",
-  "matchScore": 92,
-  "recommendation": "strong_yes",
-  "skillsMatch": ["Node.js", "TypeScript", "PostgreSQL", "Docker"],
-  "missingSkills": [],
-  "strengths": ["6 years directly relevant experience", "Full stack of required tech"],
-  "concerns": ["No mention of REST API design pattern experience"],
-  "summary": "Exceptional candidate — exceeds all technical requirements.",
-  "cached": false
+  "matchScore": 87,
+  "recommendation": "yes",
+  "skillsMatch": ["Node.js", "PostgreSQL", "Docker"],
+  "missingSkills": ["REST"],
+  "strengths": ["Proficient in Node.js", "Proficient in PostgreSQL", "Proficient in Docker"],
+  "concerns": ["Missing required skill: REST"],
+  "summary": "Candidate matches 3 of 4 required skills with a semantic similarity score of 91/100. Recommended for interview with minor gaps in REST.",
+  "cached": false,
+  "screenedAt": "2026-05-13T10:00:00Z"
 }
 ```
 
-### Get ranked candidates (paginated)
+### Get ranked candidates
 
 ```bash
-curl "http://localhost:3000/api/v1/screen/ranked/$JOB_ID?page=1&limit=10&minScore=70&recommendation=yes" \
+curl "http://localhost:3000/api/v1/screen/ranked/$JOB_ID?page=1&limit=10&minScore=70" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-**Response:**
-```json
-{
-  "data": [...],
-  "total": 24,
-  "page": 1,
-  "limit": 10,
-  "totalPages": 3
-}
-```
+---
+
+## How AI Screening Works
+
+The screener uses a fully local ML pipeline — no external API calls, no usage costs.
+
+1. **Skill extraction** — spacy (`en_core_web_md`) and a curated vocabulary of ~60 tech skills scan both the resume and job requirements for known skill tokens (case-insensitive).
+2. **Semantic similarity** — `sentence-transformers` (`all-MiniLM-L6-v2`) encodes resume text and job description into embeddings; cosine similarity gives a 0–100 semantic score.
+3. **Match score** — `score = 0.6 × semantic + 0.4 × skill_coverage`, clamped to [0, 100].
+4. **Recommendation** — `strong_yes` (≥ 90), `yes` (≥ 70), `maybe` (≥ 50), `no` (< 50).
+5. **Caching** — result stored in PostgreSQL; Redis caches by `sha256(resumeText + jobDescription)` for 1 hr so identical pairs skip recomputation.
+
+For best results, make sure:
+- The job `requirements` field lists specific skills (e.g. `"Node.js, PostgreSQL, Docker"`)
+- Candidates upload a text-selectable PDF (not a scanned image)
 
 ---
 
-## Performance Benchmarks
+## Roles
 
-| Scenario | p50 | p95 |
-|---|---|---|
-| DB-cached screening (same applicationId) | < 5ms | < 20ms |
-| Redis-cached screening (same resume+job hash) | < 30ms | < 60ms |
-| Full Claude API call | 1.2s | 2.8s |
-| Job CRUD (no AI) | < 15ms | < 40ms |
-| Auth (login, bcrypt) | < 80ms | < 150ms |
-
----
-
-## Architecture Decision Records
-
-### Why microservices?
-
-Each service owns a single bounded context — auth, jobs, AI screening — deployable and scalable independently. Claude API calls are isolated: the AI screener can scale out without touching auth or job state. The trade-off is operational complexity; Docker Compose mitigates this locally and GitHub Actions automates deployment.
-
-### Why Redis cache for AI results?
-
-Claude API costs $0.003–0.015 per call. Identical resume+job pairs are hashed and cached for 1 hour. In practice, recruiters run the same job description against hundreds of candidates; the hash key (`sha256(resumeText + jobDescription)`) means any candidate who re-applies gets an instant result. This reduces Claude API spend by an estimated 40–60% for active job postings.
-
-### Why JSONB for arrays?
-
-`skillsMatch`, `missingSkills`, `strengths`, and `concerns` are arrays of arbitrary strings. JSONB stores them natively, supports GIN indexing for future search features (`@>` queries), and requires no schema migration as Claude's output evolves. Alternative: separate junction tables — over-engineered for this data size and query pattern.
-
-### Why UUID primary keys?
-
-Row IDs are exposed in API responses and S3 keys. UUIDs prevent enumeration attacks (sequential integer IDs let attackers guess adjacent records), distribute well across a partitioned DB, and are trivially generated in application code with no DB round-trip. The storage cost (16 bytes vs 4 bytes) is negligible at this scale.
-
-### Why shared PostgreSQL for all services?
-
-A true microservices architecture uses one database per service. For this project, a shared DB is an intentional pragmatic choice: it avoids operating three separate PG instances, keeps the Docker Compose footprint small, and allows the AI screener to JOIN through `applications` to resolve `job_id` without cross-service HTTP calls. If the services grow independently, extract to separate schemas or databases per service.
+| Role | Can do |
+|---|---|
+| `candidate` | View jobs, apply to jobs |
+| `recruiter` | All candidate actions + create/edit/delete own jobs, view own job applications, trigger AI screening |
+| `admin` | All recruiter actions + manage any job or application |
 
 ---
 
@@ -280,86 +326,87 @@ A true microservices architecture uses one database per service. For this projec
 ```
 ai-resume-screener/
 ├── apps/
-│   ├── api-gateway/          HTTP proxy · rate limiting · request logging
+│   ├── api-gateway/          Rate limiting · logging · HTTP proxy
 │   │   └── src/
-│   │       ├── filters/      HttpExceptionFilter
-│   │       ├── health/       GET /health
-│   │       ├── middleware/   LoggingMiddleware (method/path/status/ms)
-│   │       └── throttler/    RedisThrottlerStorage (ioredis-backed)
+│   │       ├── gateway.controller.ts   Route definitions + multipart proxy
+│   │       ├── gateway.service.ts      proxy() + proxyUpload() methods
+│   │       ├── health/                 GET /health — @SkipThrottle()
+│   │       ├── middleware/             LoggingMiddleware
+│   │       ├── filters/               HttpExceptionFilter
+│   │       └── throttler/             RedisThrottlerStorage (ioredis)
 │   ├── auth-service/         JWT auth · user registration · RBAC
 │   │   └── src/
-│   │       ├── auth/         controller · service · guards · strategies
-│   │       ├── filters/      HttpExceptionFilter
-│   │       ├── health/       GET /health (DB ping)
-│   │       └── users/        User entity
-│   ├── job-service/          Job CRUD · applications · S3 resume upload
+│   │       ├── auth/                   Register · login · verify · profile
+│   │       └── users/                  User entity (TypeORM)
+│   ├── job-service/          Job CRUD · applications · MinIO uploads · PDF extraction
 │   │   └── src/
-│   │       ├── entities/     Job · Application (TypeORM)
-│   │       ├── filters/      HttpExceptionFilter
-│   │       ├── guards/       JwtAuthGuard · RolesGuard
-│   │       ├── health/       GET /health (DB ping)
-│   │       └── jobs/         controller · service · DTOs
-│   └── ai-screener-service/  Claude AI · Redis cache · events · email
-│       └── src/
-│           ├── dto/          ScreenRequestDto · RankingQueryDto (paginated)
-│           ├── entities/     ScreeningResult (TypeORM)
-│           ├── events/       ScreeningCompletedEvent · NotificationListener
-│           ├── filters/      HttpExceptionFilter
-│           ├── guards/       JwtAuthGuard · RolesGuard
-│           └── health/       GET /health (DB + Redis ping)
+│   │       ├── entities/               Job · Application (TypeORM)
+│   │       └── jobs/                   Controller · service · DTOs
+│   └── ai-screener-service/  Python FastAPI · local ML · Redis cache · email
+│       ├── main.py                     FastAPI app, endpoints, startup
+│       ├── screener.py                 ML pipeline: spacy + sentence-transformers
+│       ├── cache.py                    Redis get/set helpers
+│       ├── database.py                 psycopg2 connection pool
+│       ├── auth.py                     JWT verification + role guard
+│       └── models.py                   Pydantic schemas
+├── apps/frontend/            Next.js 14 App Router + Tailwind CSS v4
+│   ├── app/
+│   │   ├── login/ · register/          Auth pages
+│   │   ├── dashboard/                  Role-based home
+│   │   ├── jobs/                       List · detail · new · edit
+│   │   ├── jobs/[id]/applications/     Application management + AI screen trigger
+│   │   ├── jobs/[id]/ranked/           AI-ranked candidates view
+│   │   └── screen/[applicationId]/    Full screening report
+│   ├── components/
+│   │   ├── AuthContext.tsx             Auth state (user, token, login, logout)
+│   │   ├── AppShell.tsx               AuthProvider + Navbar wrapper
+│   │   └── Navbar.tsx                 Nav with role badge
+│   └── lib/
+│       ├── api.ts                      Typed fetch wrapper — all API calls
+│       └── auth.ts                     Token/user localStorage helpers
 ├── docker/
-│   └── init.sql              Full PostgreSQL schema + indexes + seed admin
-├── .github/
-│   └── workflows/
-│       └── ci-cd.yml         Build → push GHCR → deploy EC2
-├── docker-compose.yml        All services + healthcheck endpoints
-└── .env.example              All variables with descriptions
+│   └── init.sql              PostgreSQL schema + indexes + seed admin user
+├── docker-compose.yml
+├── .env.example
+└── CLAUDE.md                 Developer notes and gotchas
 ```
 
 ---
 
 ## Troubleshooting
 
-### `docker compose up` fails immediately
-
-```
-Error: password authentication failed for user "ars_user"
-```
-Delete the existing volume so init.sql reruns: `docker compose down -v && docker compose up --build`
-
-### auth-service: `invalid signature` on JWT
-
-`JWT_SECRET` differs between services. All four services must share the same secret — set it once in `.env` and reference it as `${JWT_SECRET}` in `docker-compose.yml`.
-
-### job-service: S3 upload fails
-
-1. Verify `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are set in `.env`
-2. The IAM user must have `s3:PutObject` permission on `arn:aws:s3:::ars-resumes/*`
-3. The bucket must exist (the service does not create it)
-
-### ai-screener-service: `Claude API error`
-
-Check `ANTHROPIC_API_KEY` is valid and your account has access to `claude-sonnet-4-20250514`. Verify with: `curl https://api.anthropic.com/v1/messages -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01"`
-
-### Rate limit 429 on POST /screen
-
-The `/screen` endpoint has a stricter limit of **3 requests per 60 seconds** per IP. Wait for the TTL window to reset, or increase `THROTTLE_TTL` in `.env`.
-
-### `health` endpoint returns `database: disconnected`
-
-PostgreSQL is not reachable. Check: `docker compose logs postgres` — the service may still be initializing. The `start_period: 20s` in healthcheck gives it time; if it persists, check `DATABASE_URL` and network connectivity between containers.
+| Symptom | Cause | Fix |
+|---|---|---|
+| `dependency failed to start: ars_minio is unhealthy` | MinIO slow to start | Increase `start_period` or wait and re-run `docker compose up -d` |
+| `dependency failed to start: ars_ai is unhealthy` | ML models still loading (takes ~90s) | Wait — `start_period: 90s` is set; check logs with `docker compose logs ai-screener-service` |
+| Gateway returns 429 on all requests | Throttle counter stuck in Redis | `docker exec ars_redis redis-cli FLUSHALL && docker compose restart api-gateway` |
+| `invalid signature` on JWT | `JWT_SECRET` mismatch between services | Ensure one `JWT_SECRET` in `.env`; all services share it via `docker-compose.yml` |
+| Resume upload fails (400) | Gateway not forwarding multipart correctly | Gateway uses `FileInterceptor` + `proxyUpload()` — ensure you're on the latest image |
+| AI score is 0 for a matching resume | PDF text not extracted (scanned image PDF) | Use a text-selectable PDF; check `resume_text` column is populated after upload |
+| Frontend shows blank page | `NEXT_PUBLIC_API_URL` not set at build time | Rebuild frontend image: `docker compose up --build -d frontend` |
+| DB password auth failed | Stale volume with different credentials | `docker compose down -v && docker compose up --build` |
+| `useSearchParams` prerender error | Missing `<Suspense>` boundary in Next.js App Router | Wrap any component calling `useSearchParams()` in `<Suspense>` |
 
 ---
 
-## Deployment (AWS EC2)
+## Architecture Decision Records
 
-```bash
-# On EC2 (Ubuntu 22.04, Docker installed)
-git clone https://github.com/yourusername/ai-resume-screener
-cd ai-resume-screener
-cp .env.example .env && nano .env   # add your secrets
-docker compose up -d --build
-docker compose ps                   # all services should be healthy
-```
+### Why local ML instead of Claude API?
 
-GitHub Actions (`.github/workflows/ci-cd.yml`) builds Docker images on every push to `main`, pushes to GHCR, and SSHs into EC2 to pull and restart containers.
+The screener uses spacy + sentence-transformers running entirely inside the Docker container. This means zero per-call cost, no API key requirement, sub-second inference after model warm-up, and full offline capability. The trade-off is that the image is larger (~2 GB with models baked in) and nuanced reasoning (e.g. interpreting career context) is weaker than a large language model. For a high-volume screening tool where cost matters, local ML is the right default.
+
+### Why MinIO instead of AWS S3?
+
+MinIO provides a fully S3-compatible API locally, so the job-service uses the standard `@aws-sdk/client-s3` with `forcePathStyle: true` and an `endpoint` override — zero code changes needed to swap in real S3. This keeps the development environment self-contained with no cloud account required.
+
+### Why shared PostgreSQL for all services?
+
+True microservices use one database per service. Here a shared DB is an intentional pragmatic choice: it avoids running three separate PostgreSQL instances, keeps the Docker Compose footprint small, and lets the AI screener JOIN through `applications` to resolve `job_id` without cross-service HTTP calls. If services grow independently, extract to separate schemas or separate databases per service.
+
+### Why UUID primary keys?
+
+Row IDs are exposed in API responses and MinIO keys. UUIDs prevent enumeration attacks, distribute well across a partitioned DB, and are generated in application code without a DB round-trip.
+
+### Why JSONB for skill arrays?
+
+`skillsMatch`, `missingSkills`, `strengths`, and `concerns` are arrays of arbitrary strings. JSONB stores them natively and supports GIN indexing for future `@>` queries. Separate junction tables would be over-engineered for this data size and query pattern.
