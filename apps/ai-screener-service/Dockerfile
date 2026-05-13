@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ─── Python dependencies ─────────────────────────────────────────────────────
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --timeout=300 --retries=5 -r requirements.txt
 
 # ─── Bake ML models into the image so the first request is fast ──────────────
 # sentence-transformers and HuggingFace caches land in /app/model_cache,
@@ -19,7 +19,7 @@ ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
 ENV HF_HOME=/app/model_cache
 ENV TRANSFORMERS_CACHE=/app/model_cache
 
-RUN python -m spacy download en_core_web_md
+RUN pip install --no-cache-dir https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.7.1/en_core_web_md-3.7.1-py3-none-any.whl
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # ─── Application code ────────────────────────────────────────────────────────

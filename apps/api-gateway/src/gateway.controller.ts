@@ -1,7 +1,9 @@
 import {
   Controller, Post, Get, Patch, Delete,
   Body, Param, Query, Headers,
+  UseInterceptors, UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes,
   ApiResponse, ApiParam, ApiQuery, ApiBody,
@@ -125,8 +127,14 @@ export class GatewayController {
   @ApiResponse({ status: 401, description: 'Missing or invalid token' })
   @ApiResponse({ status: 403, description: 'Requires candidate role' })
   @ApiResponse({ status: 409, description: 'Already applied to this job' })
-  apply(@Param('jobId') jobId: string, @Body() body: any, @Headers() headers: any) {
-    return this.gateway.proxy('job', `/api/v1/jobs/${jobId}/apply`, 'POST', body, headers);
+  @UseInterceptors(FileInterceptor('resume'))
+  apply(
+    @Param('jobId') jobId: string,
+    @UploadedFile() file: any,
+    @Body() body: any,
+    @Headers() headers: any,
+  ) {
+    return this.gateway.proxyUpload('job', `/api/v1/jobs/${jobId}/apply`, file, body, headers);
   }
 
   @ApiTags('Applications')

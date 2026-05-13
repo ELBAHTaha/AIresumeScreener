@@ -6,6 +6,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParse = require('pdf-parse');
 import { Job, JobStatus } from '../entities/job.entity';
 import { Application } from '../entities/application.entity';
 import { CreateJobDto } from './dto/create-job.dto';
@@ -82,7 +84,8 @@ export class JobsService {
     if (duplicate) throw new ConflictException('You have already applied to this job');
 
     const resumeUrl = await this.uploadResume(file, candidateId, jobId);
-    const application = this.appRepo.create({ jobId, candidateId, resumeUrl, coverLetter });
+    const resumeText = await this.extractText(file.buffer);
+    const application = this.appRepo.create({ jobId, candidateId, resumeUrl, resumeText, coverLetter });
     return this.appRepo.save(application);
   }
 
@@ -103,6 +106,16 @@ export class JobsService {
   private assertOwnership(job: Job, user: AuthUser): void {
     if (user.role !== 'admin' && job.recruiterId !== user.id) {
       throw new ForbiddenException('You can only modify your own job postings');
+    }
+  }
+
+  private async extractText(buffer: Buffer): Promise<string> {
+    try {
+      const data = await pdfParse(buffer);
+      return data.text?.trim() || '';
+    } catch {
+      this.logger.warn('PDF text extraction failed — storing empty text');
+      return '';
     }
   }
 

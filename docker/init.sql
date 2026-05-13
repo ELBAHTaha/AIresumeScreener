@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS applications (
   job_id              UUID REFERENCES jobs(id) ON DELETE CASCADE,
   candidate_id        UUID REFERENCES users(id) ON DELETE CASCADE,
   resume_url          TEXT NOT NULL,
+  resume_text         TEXT,
   cover_letter        TEXT,
   status              VARCHAR(30) DEFAULT 'pending' CHECK (status IN ('pending', 'screening', 'screened', 'interview', 'rejected', 'hired')),
   created_at          TIMESTAMP DEFAULT NOW(),

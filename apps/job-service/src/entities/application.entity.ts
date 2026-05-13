@@ -26,6 +26,9 @@ export class Application {
   @Column({ name: 'resume_url', type: 'text' })
   resumeUrl: string;
 
+  @Column({ name: 'resume_text', type: 'text', nullable: true })
+  resumeText: string;
+
   @Column({ name: 'cover_letter', type: 'text', nullable: true })
   coverLetter: string;
 
